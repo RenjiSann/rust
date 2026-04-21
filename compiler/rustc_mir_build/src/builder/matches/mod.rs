@@ -110,7 +110,9 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
         let expr_span = expr.span;
 
         match expr.kind {
-            ExprKind::LogicalOp { op: LogicalOp::And, lhs, rhs } => {
+            ExprKind::LogicalOp { op: op @ LogicalOp::And, lhs, rhs } => {
+                this.maybe_mcdc_record_operator(op, expr_span);
+
                 // A condition of `lhs && rhs` is fairly straightforward.
                 // We can just lower them in sequence, and break if either is false.
                 let lhs_true_block = this.lower_if_condition(block, lhs, args).into_block();
@@ -118,7 +120,9 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                     this.lower_if_condition(lhs_true_block, rhs, args).into_block();
                 rhs_true_block.unit()
             }
-            ExprKind::LogicalOp { op: LogicalOp::Or, lhs, rhs } => {
+            ExprKind::LogicalOp { op: op @ LogicalOp::Or, lhs, rhs } => {
+                this.maybe_mcdc_record_operator(op, expr_span);
+
                 // A condition of `lhs || rhs` is more complicated, because we need to
                 // short-circuit if `lhs` is *true*. So an inner condition-scope is needed.
                 // See <https://github.com/rust-lang/rust/pull/111752>.
@@ -185,17 +189,19 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 let temp_scope = args.temp_scope_override.unwrap_or_else(|| this.local_scope());
                 let mutability = Mutability::Mut;
 
-                let place = unpack!(
-                    block = this.as_temp(
-                        block,
-                        TempLifetime {
-                            temp_lifetime: Some(temp_scope),
-                            backwards_incompatible: None
-                        },
-                        expr_id,
-                        mutability
+                let place = this.in_mcdc_sub_scope(|this| {
+                    unpack!(
+                        block = this.as_temp(
+                            block,
+                            TempLifetime {
+                                temp_lifetime: Some(temp_scope),
+                                backwards_incompatible: None
+                            },
+                            expr_id,
+                            mutability
+                        )
                     )
-                );
+                });
 
                 let operand = Operand::Move(Place::from(place));
 
