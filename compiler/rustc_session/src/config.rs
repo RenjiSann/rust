@@ -188,6 +188,8 @@ pub enum CoverageLevel {
     /// instrumentation, so it might be removed in the future when MC/DC is
     /// sufficiently complete, or if it is making MC/DC changes difficult.
     Condition,
+    /// FIXME: Document
+    Mcdc,
 }
 
 // The different settings that the `-Z offload` flag can have.
