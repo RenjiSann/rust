@@ -160,6 +160,10 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                 let condition_scope = this.local_scope();
                 let source_info = this.source_info(expr.span);
 
+                // Build the binary decision diagram from for MC/DC purposes if
+                // enabled.
+                this.visit_logical_operator(op, expr.span);
+
                 // We first evaluate the left-hand side of the predicate ...
                 let (then_block, else_block) =
                     this.in_if_then_scope(condition_scope, expr.span, |this| {
@@ -193,8 +197,14 @@ impl<'a, 'tcx> Builder<'a, 'tcx> {
                         const_: Const::from_bool(this.tcx, constant),
                     },
                 );
-                let mut rhs_block =
-                    this.expr_into_dest(destination, continuation, rhs).into_block();
+
+                // Wrap lowering in an MC/DC sub-scope, since we might
+                // encounter other boolean expressions that should not be mixed
+                // with a possibly existing current one.
+                let mut rhs_block = this.in_mcdc_sub_scope(|this| {
+                    this.expr_into_dest(destination, continuation, rhs).into_block()
+                });
+
                 // Instrument the lowered RHS's value for condition coverage.
                 // (Does nothing if condition coverage is not enabled.)
                 this.visit_coverage_standalone_condition(rhs, destination, &mut rhs_block);
