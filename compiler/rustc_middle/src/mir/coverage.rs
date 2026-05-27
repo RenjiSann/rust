@@ -102,6 +102,23 @@ pub enum CoverageKind {
     /// During codegen, this might be lowered to `llvm.instrprof.increment` or
     /// to a no-op, depending on the outcome of counter-creation.
     VirtualCounter { bcb: BasicCoverageBlock },
+
+    /// Marks a point in MIR where a condition was evaluated and we increment the
+    /// MC/DC temp variable to build the test vector.
+    MCDCTmpIdxUpdate {
+        /// Number by which to increment the temporary.
+        incr: u32,
+
+        /// Index of the temporary to increment in the stack of temporaries.
+        /// (Needed for nested decisions)
+        decision_depth: u16,
+    },
+
+    /// Marks a point in MIR where we want to register a test vector after evaluating
+    /// a decision.
+    ///
+    /// Eventually lowered to `llvm.instrprof.mcdc.tvbitmap.update` in LLVM IR.
+    MCDCTestVectorBitmapUpdate { bitmap_idx: u32, decision_depth: u16 },
 }
 
 impl Debug for CoverageKind {
@@ -112,6 +129,12 @@ impl Debug for CoverageKind {
             }
             CoverageKind::BlockMarker { id } => write!(fmt, "BlockMarker({:?})", id.index()),
             CoverageKind::VirtualCounter { bcb } => write!(fmt, "VirtualCounter({bcb:?})"),
+            CoverageKind::MCDCTmpIdxUpdate { incr, decision_depth } => {
+                write!(fmt, "MCDCDecisionIdxUpdate(incr={incr}, depth={decision_depth})")
+            }
+            CoverageKind::MCDCTestVectorBitmapUpdate { bitmap_idx, decision_depth } => {
+                write!(fmt, "MCDCTestVectorBitmapUpdate({bitmap_idx}, depth={decision_depth})")
+            }
         }
     }
 }
@@ -124,6 +147,10 @@ impl CoverageKind {
         match self {
             CoverageKind::Point { .. } | CoverageKind::BlockMarker { .. } => true,
             CoverageKind::VirtualCounter { .. } => false,
+
+            // MCDC coverage statements are passed to codegen
+            CoverageKind::MCDCTmpIdxUpdate { .. }
+            | CoverageKind::MCDCTestVectorBitmapUpdate { .. } => false,
         }
     }
 }
