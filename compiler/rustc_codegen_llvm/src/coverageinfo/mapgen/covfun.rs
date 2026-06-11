@@ -129,7 +129,7 @@ impl ResolvedMappings {
     fn all_source_files(&self) -> impl Iterator<Item = &SourceFile> {
         // FIXME(Zalathar): When expansion regions are supported, this also needs to yield
         // any source files used by descendant expansions.
-        let ResolvedMappings { source_file, code_mappings: _, branch_mappings: _ } = self;
+        let ResolvedMappings { source_file, .. } = self;
         iter::once(source_file.as_ref())
     }
 }
@@ -194,6 +194,8 @@ fn prepare_resolved_mappings<'tcx>(
                 true_counter: counter_for_bcb(true_bcb),
                 false_counter: counter_for_bcb(false_bcb),
             }),
+            MappingKind::MCDCCondition { .. } => unimplemented!(),
+            MappingKind::MCDCDecision { .. } => unimplemented!(),
         }
     }
 
