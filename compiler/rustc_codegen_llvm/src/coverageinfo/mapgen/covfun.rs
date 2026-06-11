@@ -170,6 +170,8 @@ fn fill_region_tables<'tcx>(
                     false_counter: counter_for_bcb(false_bcb),
                 });
             }
+            MappingKind::MCDCCondition { .. } => todo!(),
+            MappingKind::MCDCDecision { .. } => todo!(),
         }
     }
 }
