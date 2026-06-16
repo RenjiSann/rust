@@ -10,6 +10,7 @@ use tracing::trace;
 use ty::print::PrettyPrinter;
 
 use super::graphviz::write_mir_fn_graphviz;
+use crate::mir::coverage::FunctionMCDCExtraInfo;
 use crate::mir::interpret::{
     AllocBytes, AllocId, Allocation, ConstAllocation, GlobalAlloc, Pointer, Provenance,
     alloc_range, read_target_uint,
@@ -693,12 +694,20 @@ fn write_coverage_mir_info(
     mir_info: &coverage::CoverageMirInfo,
     w: &mut dyn io::Write,
 ) -> io::Result<()> {
-    let coverage::CoverageMirInfo { mappings, .. } = mir_info;
+    let coverage::CoverageMirInfo { mappings, mcdc_info, .. } = mir_info;
 
     for coverage::Mapping { kind, span } in mappings {
         writeln!(w, "{INDENT}coverage {kind:?} => {span:?};")?;
     }
     writeln!(w)?;
+
+    if let Some(FunctionMCDCExtraInfo { bitmap_bits, num_temporaries }) = mcdc_info.as_ref() {
+        writeln!(
+            w,
+            "{INDENT}coverage (MC/DC: bitmap_bits={bitmap_bits}, num_temporaries={num_temporaries});"
+        )?;
+        writeln!(w)?;
+    }
 
     Ok(())
 }
