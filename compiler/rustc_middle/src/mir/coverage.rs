@@ -90,6 +90,23 @@ pub enum CoverageKind {
     /// During codegen, this might be lowered to `llvm.instrprof.increment` or
     /// to a no-op, depending on the outcome of counter-creation.
     VirtualCounter { bcb: BasicCoverageBlock },
+
+    /// Marks a point in MIR where a condition was evaluated and we increment the
+    /// MC/DC temp variable to build the test vector.
+    MCDCTmpIdxUpdate {
+        /// Number by which to increment the temporary.
+        incr: u32,
+
+        /// Index of the temporary to increment in the stack of temporaries.
+        /// (Needed for nested decisions)
+        decision_depth: u16,
+    },
+
+    /// Marks a point in MIR where we want to register a test vector after evaluating
+    /// a decision.
+    ///
+    /// Eventually lowered to `llvm.instrprof.mcdc.tvbitmap.update` in LLVM IR.
+    MCDCTestVectorBitmapUpdate { bitmap_idx: u32, decision_depth: u16 },
 }
 
 impl Debug for CoverageKind {
@@ -99,6 +116,12 @@ impl Debug for CoverageKind {
             SpanMarker => write!(fmt, "SpanMarker"),
             BlockMarker { id } => write!(fmt, "BlockMarker({:?})", id.index()),
             VirtualCounter { bcb } => write!(fmt, "VirtualCounter({bcb:?})"),
+            MCDCTmpIdxUpdate { incr, decision_depth } => {
+                write!(fmt, "MCDCDecisionIdxUpdate(incr={incr}, depth={decision_depth})")
+            }
+            MCDCTestVectorBitmapUpdate { bitmap_idx, decision_depth } => {
+                write!(fmt, "MCDCTestVectorBitmapUpdate({bitmap_idx}, depth={decision_depth})")
+            }
         }
     }
 }
@@ -135,6 +158,16 @@ pub enum MappingKind {
     Code { bcb: BasicCoverageBlock },
     /// Associates a branch region with separate counters for true and false.
     Branch { true_bcb: BasicCoverageBlock, false_bcb: BasicCoverageBlock },
+    /// Associates a condition region to a decision graph node and its true
+    /// and false outcomes.
+    MCDCCondition {
+        true_bcb: BasicCoverageBlock,
+        false_bcb: BasicCoverageBlock,
+        mcdc_mappings: mcdc::ConditionInfo,
+    },
+    /// Associate a decision region with its index in the entire MC/DC bitmap,
+    /// and its number of conditions,
+    MCDCDecision { bitmap_idx: u32, num_conditions: u16 },
 }
 
 #[derive(Clone, Debug)]
@@ -158,6 +191,23 @@ pub struct FunctionCoverageInfo {
     pub priority_list: Vec<BasicCoverageBlock>,
 
     pub mappings: Vec<Mapping>,
+    pub mcdc_info: Option<FunctionMCDCExtraInfo>,
+}
+
+/// Additional information carried by [`FunctionCoverageInfo`] when MC/DC is
+/// enabled.
+#[derive(Clone, Debug)]
+#[derive(TyEncodable, TyDecodable, Hash, StableHash)]
+pub struct FunctionMCDCExtraInfo {
+    /// Number of bits to allocate to the MC/DC bitmap for this function.
+    ///
+    /// This is the sum of the number of possible test vectors for each MC/DC
+    /// decision in the function.
+    pub bitmap_bits: usize,
+
+    /// Number of temporary test vector accumulators to allocate in the
+    /// function to accommodate the most deeply nested decisions.
+    pub num_temporaries: usize,
 }
 
 /// Coverage information for a function, recorded during MIR building and
