@@ -13,7 +13,7 @@ use rustc_codegen_ssa::traits::{BaseTypeCodegenMethods as _, ConstCodegenMethods
 use rustc_index::IndexVec;
 use rustc_middle::mir::coverage::{
     BasicCoverageBlock, CounterId, CovTerm, CoverageCodegenInfo, Expression, ExpressionId, Mapping,
-    MappingKind, Op,
+    MappingKind, Op, mcdc,
 };
 use rustc_middle::ty::{Instance, TyCtxt};
 use rustc_span::{SourceFile, Span};
@@ -118,18 +118,35 @@ struct ResolvedMappings {
 
     code_mappings: Vec<CodeMapping>,
     branch_mappings: Vec<BranchMapping>,
+
+    mcdc_decision_mappings: Vec<MCDCDecisionMapping>,
+    mcdc_condition_mappings: Vec<MCDCConditionMapping>,
 }
 
 impl ResolvedMappings {
     fn ensure_nonempty(self) -> Option<Self> {
-        let ResolvedMappings { source_file: _, code_mappings, branch_mappings } = &self;
-        if code_mappings.is_empty() && branch_mappings.is_empty() { None } else { Some(self) }
+        let ResolvedMappings {
+            source_file: _,
+            code_mappings,
+            branch_mappings,
+            mcdc_decision_mappings,
+            mcdc_condition_mappings,
+        } = &self;
+        if code_mappings.is_empty()
+            && branch_mappings.is_empty()
+            && mcdc_decision_mappings.is_empty()
+            && mcdc_condition_mappings.is_empty()
+        {
+            None
+        } else {
+            Some(self)
+        }
     }
 
     fn all_source_files(&self) -> impl Iterator<Item = &SourceFile> {
         // FIXME(Zalathar): When expansion regions are supported, this also needs to yield
         // any source files used by descendant expansions.
-        let ResolvedMappings { source_file, code_mappings: _, branch_mappings: _ } = self;
+        let ResolvedMappings { source_file, .. } = self;
         iter::once(source_file.as_ref())
     }
 }
@@ -147,6 +164,23 @@ struct BranchMapping {
     coords: spans::Coords,
     true_counter: ffi::Counter,
     false_counter: ffi::Counter,
+}
+
+/// Resolved from [`MappingKind::MCDCDecision`], TODO
+#[derive(Debug)]
+struct MCDCDecisionMapping {
+    coords: spans::Coords,
+    bitmap_idx: u32,
+    num_conditions: u16,
+}
+
+/// Resolved from [`MappingKind::MCDCCondition`], TODO
+#[derive(Debug)]
+struct MCDCConditionMapping {
+    coords: spans::Coords,
+    true_counter: ffi::Counter,
+    false_counter: ffi::Counter,
+    params: mcdc::ConditionInfo,
 }
 
 fn prepare_resolved_mappings<'tcx>(
@@ -182,6 +216,8 @@ fn prepare_resolved_mappings<'tcx>(
 
     let mut code_mappings = vec![];
     let mut branch_mappings = vec![];
+    let mut mcdc_decision_mappings = vec![];
+    let mut mcdc_condition_mappings = vec![];
 
     for &Mapping { ref kind, span } in mappings {
         let Some(coords) = make_coords(span) else { continue };
@@ -194,10 +230,32 @@ fn prepare_resolved_mappings<'tcx>(
                 true_counter: counter_for_bcb(true_bcb),
                 false_counter: counter_for_bcb(false_bcb),
             }),
+            MappingKind::MCDCCondition { true_bcb, false_bcb, mcdc_mappings } => {
+                mcdc_condition_mappings.push(MCDCConditionMapping {
+                    coords,
+                    true_counter: counter_for_bcb(true_bcb),
+                    false_counter: counter_for_bcb(false_bcb),
+                    params: mcdc_mappings.into(),
+                });
+            }
+            MappingKind::MCDCDecision { bitmap_idx, num_conditions } => {
+                mcdc_decision_mappings.push(MCDCDecisionMapping {
+                    coords,
+                    bitmap_idx,
+                    num_conditions,
+                });
+            }
         }
     }
 
-    ResolvedMappings { source_file, code_mappings, branch_mappings }.ensure_nonempty()
+    ResolvedMappings {
+        source_file,
+        code_mappings,
+        branch_mappings,
+        mcdc_decision_mappings,
+        mcdc_condition_mappings,
+    }
+    .ensure_nonempty()
 }
 
 /// Populates the mapping region tables for the current function's covfun record.
@@ -207,7 +265,13 @@ fn fill_region_tables(
     virtual_file_mapping: &mut IndexVec<LocalFileId, u32>,
     regions: &mut llvm_cov::Regions,
 ) {
-    let ResolvedMappings { source_file, code_mappings, branch_mappings } = mappings;
+    let ResolvedMappings {
+        source_file,
+        code_mappings,
+        branch_mappings,
+        mcdc_decision_mappings,
+        mcdc_condition_mappings,
+    } = mappings;
     let Some(global_file_id) = global_file_table.get_existing_id(source_file) else {
         debug_assert!(false, "couldn't find an existing global-file-id for {source_file:?}");
         return;
@@ -217,6 +281,8 @@ fn fill_region_tables(
         code_regions,
         expansion_regions: _, // FIXME(Zalathar): Fill out support for expansion regions
         branch_regions,
+        mcdc_condition_regions,
+        mcdc_decision_regions,
     } = regions;
 
     // The global file IDs are stored as `u32` to make FFI easier.
@@ -231,6 +297,25 @@ fn fill_region_tables(
     for &BranchMapping { coords, true_counter, false_counter } in branch_mappings {
         let cov_span = coords.make_coverage_span(local_file_id);
         branch_regions.push(ffi::BranchRegion { cov_span, true_counter, false_counter });
+    }
+
+    for &MCDCDecisionMapping { coords, bitmap_idx, num_conditions } in mcdc_decision_mappings {
+        let cov_span = coords.make_coverage_span(local_file_id);
+        let params = ffi::mcdc::DecisionParameters { bitmap_idx, num_conditions };
+        mcdc_decision_regions.push(ffi::mcdc::DecisionRegion { cov_span, params });
+    }
+
+    for &MCDCConditionMapping { coords, true_counter, false_counter, params } in
+        mcdc_condition_mappings
+    {
+        let cov_span = coords.make_coverage_span(local_file_id);
+        let params = params.into();
+        mcdc_condition_regions.push(ffi::mcdc::ConditionRegion {
+            cov_span,
+            true_counter,
+            false_counter,
+            params,
+        });
     }
 }
 

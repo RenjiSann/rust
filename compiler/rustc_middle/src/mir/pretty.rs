@@ -10,6 +10,7 @@ use tracing::trace;
 use ty::print::PrettyPrinter;
 
 use super::graphviz::write_mir_fn_graphviz;
+use crate::mir::coverage::FunctionMCDCExtraInfo;
 use crate::mir::interpret::{
     AllocBytes, AllocId, Allocation, ConstAllocation, GlobalAlloc, Pointer, Provenance,
     alloc_range, read_target_uint,
@@ -644,7 +645,7 @@ fn write_coverage_early_info(
     early_info: &coverage::CoverageEarlyInfo,
     w: &mut dyn io::Write,
 ) -> io::Result<()> {
-    let coverage::CoverageEarlyInfo { num_block_markers: _, branch_spans } = early_info;
+    let coverage::CoverageEarlyInfo { num_block_markers: _, branch_spans, mcdc_spans } = early_info;
 
     // Only add an extra trailing newline if we printed at least one thing.
     let mut did_print = false;
@@ -654,6 +655,31 @@ fn write_coverage_early_info(
             w,
             "{INDENT}coverage branch {{ true: {true_marker:?}, false: {false_marker:?} }} => {span:?}",
         )?;
+        did_print = true;
+    }
+
+    for (
+        coverage::mcdc::DecisionSpan { span, end_markers, decision_depth, num_conditions },
+        conditions,
+    ) in mcdc_spans
+    {
+        writeln!(
+            w,
+            "{INDENT}MCDC decision {{ num_conditions: {num_conditions}, depth: {decision_depth}, outputs: {end_markers:?} }} => {span:?}",
+        )?;
+
+        for coverage::mcdc::ConditionSpan {
+            span,
+            condition_info:
+                coverage::mcdc::ConditionInfo { condition_id, true_next_id, false_next_id },
+            ..
+        } in conditions
+        {
+            writeln!(
+                w,
+                "{INDENT}{INDENT}condition {{ id: {condition_id:?}, true_id: {true_next_id:?}, false_id: {false_next_id:?} }} => {span:?}"
+            )?;
+        }
         did_print = true;
     }
 
@@ -668,12 +694,20 @@ fn write_coverage_mir_info(
     mir_info: &coverage::CoverageMirInfo,
     w: &mut dyn io::Write,
 ) -> io::Result<()> {
-    let coverage::CoverageMirInfo { mappings, .. } = mir_info;
+    let coverage::CoverageMirInfo { mappings, mcdc_info, .. } = mir_info;
 
     for coverage::Mapping { kind, span } in mappings {
         writeln!(w, "{INDENT}coverage {kind:?} => {span:?};")?;
     }
     writeln!(w)?;
+
+    if let Some(FunctionMCDCExtraInfo { bitmap_bits, num_temporaries }) = mcdc_info.as_ref() {
+        writeln!(
+            w,
+            "{INDENT}coverage (MC/DC: bitmap_bits={bitmap_bits}, num_temporaries={num_temporaries});"
+        )?;
+        writeln!(w)?;
+    }
 
     Ok(())
 }
